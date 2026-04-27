@@ -1,12 +1,13 @@
 """
-https://careers.abb-bank.az — adjust listing URL and selectors to match live site.
+https://careers.abb-bank.az — vacancy links under /vakansiyalar/v2/<id>
 """
 
 import logging
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
-from src.scrapers.base import Job, fetch_html_static, run_scraper_safe
+from src.scrapers.base import Job, absolute_url, fetch_html_static, run_scraper_safe
 
 logger = logging.getLogger(__name__)
 
@@ -18,33 +19,33 @@ async def scrape_abb_bank() -> list[Job]:
 
 
 async def _scrape_abb_bank() -> list[Job]:
-    # TODO: set correct careers listing URL
-    listing_url = f"{BASE_URL}/"
-    html = await fetch_html_static(listing_url)
+    html = await fetch_html_static(f"{BASE_URL}/")
     soup = BeautifulSoup(html, "lxml")
     jobs: list[Job] = []
+    seen: set[str] = set()
 
-    # TODO: replace with role/vacancy card selectors
-    for link in soup.select("a[href]"):
-        href = link.get("href") or ""
+    for link in soup.select('a[href*="vakansiyalar"]'):
+        href = link.get("href")
+        raw_url = absolute_url(BASE_URL, href)
+        if not raw_url or "abb-bank.az" not in raw_url:
+            continue
+        path = urlparse(raw_url).path
+        if "/vakansiyalar/" not in path.lower():
+            continue
+        if raw_url in seen:
+            continue
         title = (link.get_text() or "").strip()
         if len(title) < 3:
             continue
-        if not any(x in href.lower() for x in ("job", "vacancy", "career", "position")):
-            continue
-        if href.startswith("http"):
-            url = href
-        else:
-            url = f"{BASE_URL.rstrip('/')}/{href.lstrip('/')}"
-
+        seen.add(raw_url)
         jobs.append(
             Job(
-                url=url,
+                url=raw_url,
                 title=title,
                 description=title,
                 source_site="abb_bank",
             )
         )
 
-    logger.debug("abb_bank: parsed %d job links (placeholder logic)", len(jobs))
+    logger.info("abb_bank: %d vacancy links", len(jobs))
     return jobs

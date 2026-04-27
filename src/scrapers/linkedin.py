@@ -1,21 +1,39 @@
 """
-LinkedIn job search URLs — best-effort; pages often require login or block automation.
-Set LINKEDIN_JOB_SEARCH_URL in .env. Official APIs are preferred for production.
+LinkedIn job search — best-effort; set LINKEDIN_JOB_SEARCH_URL in .env.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+import re
+from urllib.parse import urlparse, urlunparse
 
 from bs4 import BeautifulSoup
+from playwright.async_api import BrowserContext
 
-from src.scrapers.base import Job, fetch_html_playwright, run_scraper_safe
-
-if TYPE_CHECKING:
-    from playwright.async_api import BrowserContext
+from src.scrapers.base import Job, absolute_url, fetch_html_playwright, run_scraper_safe
 
 logger = logging.getLogger(__name__)
+
+_LINKEDIN_HOST = "linkedin.com"
+
+
+def _normalize_linkedin_job_url(href: str) -> str | None:
+    if "linkedin.com" not in href:
+        return None
+    parsed = urlparse(href)
+    if _LINKEDIN_HOST not in (parsed.netloc or "").lower():
+        return None
+    path = parsed.path or ""
+    if "/jobs/view/" not in path and "/jobs/collections/" not in path:
+        if not re.search(r"/jobs/\d+", path):
+            return None
+    clean = urlunparse(
+        (parsed.scheme or "https", parsed.netloc.lower(), path, "", "", "")
+    )
+    if clean.endswith("/"):
+        clean = clean[:-1]
+    return clean
 
 
 async def scrape_linkedin(context: BrowserContext, search_url: str | None) -> list[Job]:
@@ -27,29 +45,37 @@ async def _scrape_linkedin(context: BrowserContext, search_url: str | None) -> l
         logger.info("linkedin: LINKEDIN_JOB_SEARCH_URL not set, skipping")
         return []
 
-    html = await fetch_html_playwright(context, search_url)
+    html = await fetch_html_playwright(
+        context,
+        search_url,
+        wait_until="domcontentloaded",
+        timeout_ms=120_000,
+        post_load_delay_ms=5000,
+    )
     soup = BeautifulSoup(html, "lxml")
     jobs: list[Job] = []
+    seen: set[str] = set()
 
-    # TODO: replace with stable selectors from LinkedIn job search results (changes frequently)
-    for link in soup.select("a[href*='jobs/view'], a[href*='/jobs/']"):
+    for link in soup.select("a[href]"):
         href = link.get("href") or ""
-        title = (link.get_text() or "").strip()
-        if len(title) < 2:
+        full = absolute_url("https://www.linkedin.com/", href)
+        if not full:
             continue
-        if href.startswith("http"):
-            url = href.split("?")[0] if "linkedin.com" in href else href
-        else:
-            url = f"https://www.linkedin.com{href}" if href.startswith("/") else href
-
+        norm = _normalize_linkedin_job_url(full)
+        if not norm or norm in seen:
+            continue
+        title = " ".join((link.get_text() or "").split())
+        if len(title) < 2 or title.lower() in ("apply", "see more", "show more"):
+            continue
+        seen.add(norm)
         jobs.append(
             Job(
-                url=url,
+                url=norm,
                 title=title,
                 description=title,
                 source_site="linkedin",
             )
         )
 
-    logger.debug("linkedin: parsed %d job links (placeholder logic)", len(jobs))
+    logger.info("linkedin: %d job links (best-effort)", len(jobs))
     return jobs

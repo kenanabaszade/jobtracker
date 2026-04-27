@@ -1,20 +1,23 @@
 """
-https://jobsearch.az — static HTML; use DevTools to refine selectors below.
+https://jobsearch.az — listing at /vacancies; links use /vacancies/<slug>, not "vacancy".
 """
 
 import logging
-from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
-from src.scrapers.base import Job, fetch_html_static, run_scraper_safe
-
-if TYPE_CHECKING:
-    pass
+from src.scrapers.base import Job, absolute_url, fetch_html_static, run_scraper_safe
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://jobsearch.az"
+LISTING_URL = f"{BASE_URL}/vacancies"
+
+
+def _is_vacancy_detail_path(path: str) -> bool:
+    parts = [p for p in path.strip("/").split("/") if p]
+    return len(parts) >= 2 and parts[0].lower() == "vacancies"
 
 
 async def scrape_jobsearch_az() -> list[Job]:
@@ -22,35 +25,41 @@ async def scrape_jobsearch_az() -> list[Job]:
 
 
 async def _scrape_jobsearch_az() -> list[Job]:
-    # TODO: confirm listing URL path and card selectors from live HTML
-    listing_url = f"{BASE_URL}/"
-    html = await fetch_html_static(listing_url)
+    html = await fetch_html_static(LISTING_URL)
     soup = BeautifulSoup(html, "lxml")
     jobs: list[Job] = []
+    seen: set[str] = set()
 
-    # TODO: replace with real selectors, e.g. soup.select("article.job-listing a")
-    for link in soup.select("a[href]"):
-        href = link.get("href") or ""
-        if not href or href.startswith("#"):
+    for link in soup.select('a[href*="/vacancies/"]'):
+        href = link.get("href")
+        raw_url = absolute_url(BASE_URL, href)
+        if not raw_url:
+            continue
+        path = urlparse(raw_url).path
+        if not _is_vacancy_detail_path(path):
+            continue
+        if raw_url.rstrip("/") == f"{BASE_URL}/vacancies":
+            continue
+        if raw_url in seen:
             continue
         title = (link.get_text() or "").strip()
-        if len(title) < 3:
+        if len(title) < 2:
+            h = link.find_parent()
+            if h:
+                hx = h.find(["h2", "h3", "h4"])
+                if hx:
+                    title = (hx.get_text() or "").strip()
+        if len(title) < 2:
             continue
-        if "/job" not in href.lower() and "vacancy" not in href.lower():
-            continue
-        if href.startswith("http"):
-            url = href
-        else:
-            url = f"{BASE_URL.rstrip('/')}/{href.lstrip('/')}"
-
+        seen.add(raw_url)
         jobs.append(
             Job(
-                url=url,
+                url=raw_url,
                 title=title,
                 description=title,
                 source_site="jobsearch.az",
             )
         )
 
-    logger.debug("jobsearch.az: parsed %d job links (placeholder logic)", len(jobs))
+    logger.info("jobsearch.az: %d vacancy links", len(jobs))
     return jobs

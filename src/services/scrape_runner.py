@@ -37,14 +37,19 @@ async def fetch_all_jobs(settings: Settings) -> list[Job]:
     jobs.extend(await scrape_abb_bank())
     await jitter_delay(1.0, 2.5)
 
-    jobs.extend(await scrape_kapital_bank())
-    await jitter_delay(1.0, 2.5)
-
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context()
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 900},
+                locale="az-AZ",
+            )
             try:
+                jobs.extend(await scrape_kapital_bank(context))
+                await jitter_delay(1.0, 2.5)
                 jobs.extend(await scrape_glorri(context))
                 await jitter_delay(1.0, 2.5)
                 jobs.extend(
