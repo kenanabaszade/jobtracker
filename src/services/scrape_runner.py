@@ -26,12 +26,9 @@ def _merge_jobs_by_url(jobs: list[Job]) -> list[Job]:
     return list(seen.values())
 
 
-async def run_scrape_cycle(
-    bot: Bot,
-    session_factory,
-    settings: Settings,
-) -> None:
-    logger.info("Scrape cycle started")
+async def fetch_all_jobs(settings: Settings) -> list[Job]:
+    """Scrape all configured sources and return deduped jobs (no Telegram / DB notify)."""
+    logger.info("fetch_all_jobs started")
     jobs: list[Job] = []
 
     jobs.extend(await scrape_jobsearch_az())
@@ -60,6 +57,16 @@ async def run_scrape_cycle(
         logger.exception("Playwright scrape block failed")
 
     merged = _merge_jobs_by_url(jobs)
-    logger.info("Scrape cycle collected %d unique jobs", len(merged))
+    logger.info("fetch_all_jobs collected %d unique jobs", len(merged))
+    return merged
+
+
+async def run_scrape_cycle(
+    bot: Bot,
+    session_factory,
+    settings: Settings,
+) -> None:
+    logger.info("Scrape cycle started")
+    merged = await fetch_all_jobs(settings)
     await notify_users_for_jobs(bot, session_factory, merged)
     logger.info("Scrape cycle finished")

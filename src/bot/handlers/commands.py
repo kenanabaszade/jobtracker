@@ -1,10 +1,21 @@
+import logging
+
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
 
+from src.config import get_settings
 from src.db.models import Keyword, User
+from src.scrapers.base import Job
+from src.services.matching import job_matches_user_keywords
+from src.services.scrape_runner import fetch_all_jobs
+
+logger = logging.getLogger(__name__)
+
+_MAX_JOBS_IN_REPLY = 60
+_CHUNK_SOFT_LIMIT = 3800
 
 router = Router(name="commands")
 
@@ -34,7 +45,8 @@ async def cmd_start(message: Message, db_session) -> None:
         "Commands:\n"
         "/add <keyword> — track a keyword (case-insensitive)\n"
         "/list — show your keywords\n"
-        "/remove <keyword> — stop tracking a keyword"
+        "/remove <keyword> — stop tracking a keyword\n"
+        "/jobs — show current listings matching your keywords (live scrape)"
     )
 
 
@@ -115,3 +127,79 @@ async def cmd_remove(message: Message, command: CommandObject, db_session) -> No
         return
 
     await message.answer(f"Removed keyword: {raw}")
+
+
+def _job_list_chunks(matched: list[Job], total_scraped: int) -> list[str]:
+    header = (
+        f"Current job matches ({len(matched)} shown, {total_scraped} scraped total):\n\n"
+    )
+    chunks: list[str] = []
+    buf = header
+    for job in matched:
+        line = f"• [{job.source_site}] {job.title}\n{job.url}\n\n"
+        if len(line) > 3500:
+            line = line[:3490] + "…\n\n"
+        if len(buf) + len(line) > _CHUNK_SOFT_LIMIT:
+            chunks.append(buf.rstrip())
+            buf = line
+        else:
+            buf += line
+    if buf.strip():
+        chunks.append(buf.rstrip())
+    return chunks
+
+
+@router.message(Command("jobs"))
+async def cmd_jobs(message: Message, db_session) -> None:
+    uid = message.from_user.id if message.from_user else message.chat.id
+    result = await db_session.execute(
+        select(User)
+        .options(selectinload(User.keywords))
+        .where(User.telegram_user_id == uid)
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        await message.answer("Please use /start first.")
+        return
+    if not user.keywords:
+        await message.answer("Add at least one keyword with /add first.")
+        return
+
+    wait_msg = await message.answer(
+        "Fetching current listings… This may take up to a minute."
+    )
+    settings = get_settings()
+    try:
+        all_jobs = await fetch_all_jobs(settings)
+    except Exception:
+        logger.exception("cmd_jobs: fetch_all_jobs failed")
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+        await message.answer("Could not fetch jobs. Try again later.")
+        return
+
+    try:
+        await wait_msg.delete()
+    except Exception:
+        pass
+
+    matched = [j for j in all_jobs if job_matches_user_keywords(j, user)]
+    matched.sort(key=lambda j: (j.source_site, j.title.lower()))
+    if len(matched) > _MAX_JOBS_IN_REPLY:
+        matched = matched[:_MAX_JOBS_IN_REPLY]
+
+    if not matched:
+        await message.answer(
+            f"No jobs matched your keywords in this run "
+            f"({len(all_jobs)} listings scraped)."
+        )
+        return
+
+    chunks = _job_list_chunks(matched, len(all_jobs))
+    for i, chunk in enumerate(chunks):
+        text = chunk if i == 0 else f"(continued {i + 1}/{len(chunks)})\n\n{chunk}"
+        if len(text) > 4096:
+            text = text[:4090] + "…"
+        await message.answer(text, disable_web_page_preview=True)
