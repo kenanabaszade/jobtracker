@@ -10,6 +10,7 @@ from src.bot.middlewares import DbSessionMiddleware
 from src.bot.router import main_router
 from src.config import get_settings
 from src.db.session import create_async_db_engine, get_session_factory, init_db
+from src.services.scrape_runner import run_scrape_cycle
 from src.services.scheduler import create_scheduler
 
 
@@ -32,6 +33,10 @@ async def main() -> None:
 
     scheduler = create_scheduler(bot, session_factory, settings)
     scheduler.start()
+    if settings.scrape_on_startup:
+        asyncio.create_task(
+            run_scrape_cycle(bot, session_factory, settings)
+        )
 
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())

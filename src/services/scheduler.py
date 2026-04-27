@@ -16,7 +16,7 @@ def create_scheduler(
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         run_scrape_cycle,
-        IntervalTrigger(hours=4),
+        IntervalTrigger(minutes=settings.scrape_interval_minutes),
         kwargs={
             "bot": bot,
             "session_factory": session_factory,
