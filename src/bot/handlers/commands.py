@@ -7,7 +7,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
 
 from src.config import get_settings
-from src.db.models import Keyword, User, UserSourcePreference
+from src.db.models import Keyword, User, UserJobNotification, UserSourcePreference
 from src.scrapers.base import Job
 from src.services.matching import job_matches_user_keywords
 from src.services.source_prefs import (
@@ -24,6 +24,29 @@ _MAX_JOBS_IN_REPLY = 60
 _CHUNK_SOFT_LIMIT = 3800
 
 router = Router(name="commands")
+
+HELP_TEXT = (
+    "<b>Job Tracker — commands</b>\n\n"
+    "<b>/start</b> — Register and see a short command list.\n"
+    "<b>/help</b> — This help (all commands explained).\n\n"
+    "<b>/add</b> <code>keyword</code> — Track a word or phrase. Matching is "
+    "case-insensitive in job title and description. Also used for LinkedIn "
+    "search queries (with your location from the server config).\n"
+    "<b>/list</b> — Show your tracked keywords.\n"
+    "<b>/remove</b> <code>keyword</code> — Stop tracking one keyword.\n\n"
+    "<b>/jobs</b> — Run a live scrape and list <i>current</i> matches for your "
+    "keywords (respects /source toggles). Can take about a minute.\n\n"
+    "<b>/sources</b> — Show each job site (ON/OFF) for your account.\n"
+    "<b>/source</b> <code>site</code> <code>on|off</code> — Turn a source on or off "
+    "for alerts and /jobs. Sites: <code>jobsearch</code>, <code>abb</code>, "
+    "<code>kapital</code>, <code>glorri</code>, <code>linkedin</code>.\n"
+    "Examples: <code>/source linkedin off</code> · <code>/source off kapital</code>\n\n"
+    "<b>/clear</b> — Reset <i>your bot data</i>: all keywords, site toggles, and "
+    "“already notified” history so you can get fresh alerts. "
+    "<b>Telegram does not let bots delete the chat screen</b>; old messages stay "
+    "in the app until you delete them yourself.\n\n"
+    "Tip: use /help any time."
+)
 
 
 def _normalize_keyword(text: str) -> str:
@@ -48,14 +71,14 @@ async def cmd_start(message: Message, db_session) -> None:
     await db_session.flush()
     await message.answer(
         "Welcome to the Job Tracker bot.\n\n"
-        "Commands:\n"
-        "/add <keyword> — track a keyword (case-insensitive)\n"
-        "/list — show your keywords\n"
-        "/remove <keyword> — stop tracking a keyword\n"
-        "/jobs — show current listings matching your keywords (live scrape)\n"
-        "/sources — which sites you follow\n"
-        "/source <site> on|off — e.g. /source linkedin off"
+        "Quick commands: /help (full guide), /add, /list, /remove, /jobs, "
+        "/sources, /source, /clear"
     )
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message) -> None:
+    await message.answer(HELP_TEXT, parse_mode="HTML")
 
 
 @router.message(Command("add"), F.text)
@@ -316,3 +339,38 @@ async def cmd_source(message: Message, command: CommandObject, db_session) -> No
     else:
         pref.enabled = False
     await message.answer(f"{key} is OFF (no alerts or /jobs from this source).")
+
+
+@router.message(Command("clear"))
+async def cmd_clear(message: Message, db_session) -> None:
+    uid = message.from_user.id if message.from_user else message.chat.id
+    result = await db_session.execute(
+        select(User).where(User.telegram_user_id == uid)
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        await message.answer(
+            "Nothing to clear. Use /start to register first."
+        )
+        return
+
+    await db_session.execute(delete(Keyword).where(Keyword.user_id == user.id))
+    await db_session.execute(
+        delete(UserSourcePreference).where(
+            UserSourcePreference.user_id == user.id
+        )
+    )
+    await db_session.execute(
+        delete(UserJobNotification).where(
+            UserJobNotification.user_id == user.id
+        )
+    )
+    await message.answer(
+        "Your bot data has been cleared:\n"
+        "• All keywords removed\n"
+        "• Site on/off settings reset (all sources default ON)\n"
+        "• Notification history cleared (you may get alerts for jobs you saw before)\n\n"
+        "Telegram does not allow bots to erase the chat window — old messages "
+        "stay until you delete them in Telegram.\n\n"
+        "Use /add to track keywords again."
+    )
