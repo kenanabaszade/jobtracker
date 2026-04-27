@@ -9,7 +9,12 @@ from aiogram import Bot, Dispatcher
 from src.bot.middlewares import DbSessionMiddleware
 from src.bot.router import main_router
 from src.config import get_settings
-from src.db.session import create_async_db_engine, get_session_factory, init_db
+from src.db.session import (
+    create_async_db_engine,
+    get_session_factory,
+    init_db,
+    set_app_session_factory,
+)
 from src.services.scrape_runner import run_scrape_cycle
 from src.services.scheduler import create_scheduler
 
@@ -25,6 +30,7 @@ async def main() -> None:
     engine = create_async_db_engine(settings)
     await init_db(engine)
     session_factory = get_session_factory(engine)
+    set_app_session_factory(session_factory)
 
     bot = Bot(settings.bot_token)
     dp = Dispatcher()

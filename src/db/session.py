@@ -6,6 +6,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from src.config import Settings
 from src.db.models import Base
 
+_app_session_factory = None
+
+
+def set_app_session_factory(factory) -> None:
+    global _app_session_factory
+    _app_session_factory = factory
+
+
+def get_app_session_factory():
+    return _app_session_factory
+
 
 def create_async_db_engine(settings: Settings):
     return create_async_engine(

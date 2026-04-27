@@ -15,6 +15,7 @@ from src.services.source_prefs import (
     normalize_source_key,
     user_accepts_source,
 )
+from src.db.session import get_app_session_factory
 from src.services.scrape_runner import fetch_all_jobs
 
 logger = logging.getLogger(__name__)
@@ -180,7 +181,7 @@ async def cmd_jobs(message: Message, db_session) -> None:
     )
     settings = get_settings()
     try:
-        all_jobs = await fetch_all_jobs(settings)
+        all_jobs = await fetch_all_jobs(settings, get_app_session_factory())
     except Exception:
         logger.exception("cmd_jobs: fetch_all_jobs failed")
         try:
