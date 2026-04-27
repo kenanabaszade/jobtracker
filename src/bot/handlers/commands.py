@@ -7,9 +7,14 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
 
 from src.config import get_settings
-from src.db.models import Keyword, User
+from src.db.models import Keyword, User, UserSourcePreference
 from src.scrapers.base import Job
 from src.services.matching import job_matches_user_keywords
+from src.services.source_prefs import (
+    KNOWN_SOURCES,
+    normalize_source_key,
+    user_accepts_source,
+)
 from src.services.scrape_runner import fetch_all_jobs
 
 logger = logging.getLogger(__name__)
@@ -46,7 +51,9 @@ async def cmd_start(message: Message, db_session) -> None:
         "/add <keyword> — track a keyword (case-insensitive)\n"
         "/list — show your keywords\n"
         "/remove <keyword> — stop tracking a keyword\n"
-        "/jobs — show current listings matching your keywords (live scrape)"
+        "/jobs — show current listings matching your keywords (live scrape)\n"
+        "/sources — which sites you follow\n"
+        "/source <site> on|off — e.g. /source linkedin off"
     )
 
 
@@ -154,7 +161,10 @@ async def cmd_jobs(message: Message, db_session) -> None:
     uid = message.from_user.id if message.from_user else message.chat.id
     result = await db_session.execute(
         select(User)
-        .options(selectinload(User.keywords))
+        .options(
+            selectinload(User.keywords),
+            selectinload(User.source_preferences),
+        )
         .where(User.telegram_user_id == uid)
     )
     user = result.scalar_one_or_none()
@@ -185,7 +195,12 @@ async def cmd_jobs(message: Message, db_session) -> None:
     except Exception:
         pass
 
-    matched = [j for j in all_jobs if job_matches_user_keywords(j, user)]
+    matched = [
+        j
+        for j in all_jobs
+        if user_accepts_source(user, j.source_site)
+        and job_matches_user_keywords(j, user)
+    ]
     matched.sort(key=lambda j: (j.source_site, j.title.lower()))
     if len(matched) > _MAX_JOBS_IN_REPLY:
         matched = matched[:_MAX_JOBS_IN_REPLY]
@@ -203,3 +218,100 @@ async def cmd_jobs(message: Message, db_session) -> None:
         if len(text) > 4096:
             text = text[:4090] + "…"
         await message.answer(text, disable_web_page_preview=True)
+
+
+def _parse_source_on_off(args: str) -> tuple[str | None, str | None]:
+    tokens = args.split()
+    if len(tokens) < 2:
+        return None, None
+    onoff = frozenset({"on", "off"})
+    if tokens[-1].lower() in onoff:
+        return " ".join(tokens[:-1]).strip(), tokens[-1].lower()
+    if tokens[0].lower() in onoff:
+        return " ".join(tokens[1:]).strip(), tokens[0].lower()
+    return None, None
+
+
+@router.message(Command("sources"))
+async def cmd_sources(message: Message, db_session) -> None:
+    uid = message.from_user.id if message.from_user else message.chat.id
+    result = await db_session.execute(
+        select(User)
+        .options(selectinload(User.source_preferences))
+        .where(User.telegram_user_id == uid)
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        await message.answer("Please use /start first.")
+        return
+
+    lines = []
+    for key in KNOWN_SOURCES:
+        on = user_accepts_source(user, key)
+        lines.append(f"• {key}: {'ON' if on else 'OFF'}")
+    await message.answer(
+        "Sources for alerts and /jobs:\n"
+        + "\n".join(lines)
+        + "\n\nToggle: /source linkedin off  or  /source linkedin on"
+    )
+
+
+@router.message(Command("source"), F.text)
+async def cmd_source(message: Message, command: CommandObject, db_session) -> None:
+    raw = (command.args or "").strip()
+    if not raw:
+        await message.answer(
+            "Usage: /source <site> on|off\n"
+            "Sites: jobsearch, abb, kapital, glorri, linkedin\n"
+            "Examples:\n/source linkedin off\n/source off kapital"
+        )
+        return
+
+    name, state = _parse_source_on_off(raw)
+    if not name or not state:
+        await message.answer(
+            "Could not parse. Use: /source <site> on|off\n"
+            "Example: /source linkedin off"
+        )
+        return
+
+    key = normalize_source_key(name)
+    if key is None:
+        await message.answer(
+            f"Unknown site “{name}”. Use: jobsearch, abb, kapital, glorri, linkedin"
+        )
+        return
+
+    uid = message.from_user.id if message.from_user else message.chat.id
+    result = await db_session.execute(
+        select(User).where(User.telegram_user_id == uid)
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        await message.answer("Please use /start first.")
+        return
+
+    if state == "on":
+        await db_session.execute(
+            delete(UserSourcePreference).where(
+                UserSourcePreference.user_id == user.id,
+                UserSourcePreference.source_key == key,
+            )
+        )
+        await message.answer(f"{key} is ON.")
+        return
+
+    pref_result = await db_session.execute(
+        select(UserSourcePreference).where(
+            UserSourcePreference.user_id == user.id,
+            UserSourcePreference.source_key == key,
+        )
+    )
+    pref = pref_result.scalar_one_or_none()
+    if pref is None:
+        db_session.add(
+            UserSourcePreference(user_id=user.id, source_key=key, enabled=False)
+        )
+    else:
+        pref.enabled = False
+    await message.answer(f"{key} is OFF (no alerts or /jobs from this source).")

@@ -12,6 +12,7 @@ from src.db.models import Keyword, User, UserJobNotification
 from src.db.session import session_scope
 from src.scrapers.base import Job, normalize_job_url
 from src.services.matching import job_matches_user_keywords
+from src.services.source_prefs import user_accepts_source
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,10 @@ async def notify_users_for_jobs(
     async with session_scope(session_factory) as session:
         stmt = (
             select(User)
-            .options(selectinload(User.keywords))
+            .options(
+                selectinload(User.keywords),
+                selectinload(User.source_preferences),
+            )
             .where(exists(select(Keyword.id).where(Keyword.user_id == User.id)))
         )
         result = await session.execute(stmt)
@@ -35,6 +39,8 @@ async def notify_users_for_jobs(
 
     for user in users:
         for job in jobs:
+            if not user_accepts_source(user, job.source_site):
+                continue
             if not job_matches_user_keywords(job, user):
                 continue
             norm_url = normalize_job_url(job.url)

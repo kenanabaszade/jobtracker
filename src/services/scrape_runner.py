@@ -77,7 +77,9 @@ async def fetch_all_jobs(settings: Settings) -> list[Job]:
             jobs.extend(
                 await _one_browser_scrape(
                     p,
-                    lambda ctx: scrape_linkedin(ctx, settings.linkedin_job_search_url),
+                    lambda ctx: scrape_linkedin(
+                        ctx, settings.resolved_linkedin_search_url()
+                    ),
                     "linkedin",
                 )
             )

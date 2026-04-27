@@ -26,6 +26,23 @@ class User(Base):
     notifications: Mapped[list[UserJobNotification]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    source_preferences: Mapped[list[UserSourcePreference]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class UserSourcePreference(Base):
+    """If a row exists with enabled=False, that source is off for this user (default is all on)."""
+
+    __tablename__ = "user_source_preferences"
+    __table_args__ = (UniqueConstraint("user_id", "source_key", name="uq_user_source"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    source_key: Mapped[str] = mapped_column(String(64), index=True)
+    enabled: Mapped[bool] = mapped_column(default=True)
+
+    user: Mapped[User] = relationship(back_populates="source_preferences")
 
 
 class Keyword(Base):
